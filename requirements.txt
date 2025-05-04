@@ -1,0 +1,6 @@
+streamlit
+firecrawl-py
+openai
+openai-agents
+python-dotenv
+tiktoken
