@@ -1,7 +1,7 @@
 import os, json, uuid, textwrap, asyncio, csv
 from pathlib import Path
 from typing import List
-from datetime import datetime # Added for timestamping
+from datetime import datetime
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -13,20 +13,20 @@ import tiktoken
 # ----------------- ENV & CONSTANTS -----------------
 load_dotenv()
 
-APP_NAME    = "Uni-Agent (Beta V0)"
+APP_NAME    = "Personalization Agent (Beta V0)"
 DATA_DIR    = Path(__file__).parent
 LIMIT_FILE  = DATA_DIR / "limit.json"
-FEEDBACK_FILE = DATA_DIR / "feedback.csv"    # Path for feedback log
-USAGE_LOG_FILE = DATA_DIR / "usage_log.csv"   # Path for usage log
+FEEDBACK_FILE = DATA_DIR / "feedback.csv"
+USAGE_LOG_FILE = DATA_DIR / "usage_log.csv"
 
 OPENAI_KEY      = os.getenv("OPENAI_API_KEY")
 FIRECRAWL_KEY   = os.getenv("FIRECRAWL_API_KEY")
 RUN_LIMIT       = int(os.getenv("RUN_LIMIT", "100")) # Persistent global limit
 
-# New Limits
-SESSION_RUN_LIMIT = 5     # Max questions per browser session
-MAX_URL_LENGTH = 1000     # Prevent excessively long URLs
-MAX_QUESTION_LENGTH = 500 # Prevent excessively long questions
+# Renamed/Adjusted Limits
+SESSION_GENERATION_LIMIT = 5 # Max generations per analyzed URL in a session
+MAX_URL_LENGTH = 1000
+# MAX_QUESTION_LENGTH removed - no longer applicable
 
 if not (OPENAI_KEY and FIRECRAWL_KEY):
     st.stop("❌ Set OPENAI_API_KEY and FIRECRAWL_API_KEY in a .env file.")
@@ -34,9 +34,16 @@ if not (OPENAI_KEY and FIRECRAWL_KEY):
 firecrawl = FirecrawlApp(api_key=FIRECRAWL_KEY)
 client    = OpenAI(api_key=OPENAI_KEY)
 
-# Initialize session state for session run counter
-if 'session_runs' not in st.session_state:
+# Initialize session state
+if 'session_runs' not in st.session_state: # Renamed conceptually to session_generations
     st.session_state.session_runs = 0
+if 'generated_line' not in st.session_state:
+    st.session_state.generated_line = None
+if 'page_text' not in st.session_state: # Keep page_text for context
+    st.session_state.page_text = None
+if 'source_url' not in st.session_state:
+    st.session_state.source_url = None
+# 'messages' session state removed
 
 # ----------------- HELPERS -----------------
 
@@ -46,7 +53,7 @@ def create_context_chunks(markdown_text: str, max_tokens=3000, overlap=100) -> L
     enc = tiktoken.encoding_for_model("gpt-4o-mini") # Align with agent model if different
 
     paragraphs = markdown_text.split('\n\n')
-    
+
     chunks = []
     current_chunk_para_list = []
     current_token_count = 0
@@ -55,7 +62,7 @@ def create_context_chunks(markdown_text: str, max_tokens=3000, overlap=100) -> L
         para = para.strip()
         if not para:
             continue
-            
+
         para_tokens = enc.encode(para)
         para_token_count = len(para_tokens)
 
@@ -66,7 +73,7 @@ def create_context_chunks(markdown_text: str, max_tokens=3000, overlap=100) -> L
                 chunks.append('\n\n'.join(current_chunk_para_list))
                 current_chunk_para_list = []
                 current_token_count = 0
-            
+
             # Split the large paragraph with overlap
             start_index = 0
             while start_index < para_token_count:
@@ -76,7 +83,7 @@ def create_context_chunks(markdown_text: str, max_tokens=3000, overlap=100) -> L
                 # Move start index for the next chunk, considering overlap
                 start_index += (max_tokens - overlap)
                 if start_index >= end_index: # Prevent infinite loop on very small overlap/max_tokens
-                    break 
+                    break
             continue # Move to the next paragraph
 
         # Case 2: Adding this paragraph would exceed the limit
@@ -85,7 +92,7 @@ def create_context_chunks(markdown_text: str, max_tokens=3000, overlap=100) -> L
             # Add the current chunk to the list
             if current_chunk_para_list:
                 chunks.append('\n\n'.join(current_chunk_para_list))
-            
+
             # Start new chunk with the current paragraph
             current_chunk_para_list = [para]
             current_token_count = para_token_count
@@ -101,7 +108,7 @@ def create_context_chunks(markdown_text: str, max_tokens=3000, overlap=100) -> L
 
     # If no chunks were created (e.g., empty input), return a list with an empty string
     if not chunks:
-         return [""] 
+         return [""]
 
     return chunks
 
@@ -135,62 +142,81 @@ def scrape_page(url: str, wait_ms: int = 2000) -> str:
         return md
     except Exception as e:
         # Catch potential Firecrawl specific errors if the SDK defines them, otherwise generic
-        raise RuntimeError(f"Scraping failed for {url}: {e}")
+        # Log the error for server-side debugging if needed
+        # print(f"Scraping Error for {url}: {e}")
+        raise RuntimeError(f"Scraping failed for {url}. Reason: {e}")
 
-# Refined Agent Prompt
+# Refined Agent Prompt V4 (Person-Centric Sales Focus)
 AGENT_PROMPT = textwrap.dedent("""\
-    You are a helpful and accurate Study Abroad Advisor AI. Your primary goal is to answer questions from prospective international students based *exclusively* on the provided web page text. Efficiency and clarity are key.
+    You are an expert AI copywriter specializing in crafting compelling, personalized cold email opening lines. Your primary function is to analyze provided web page text and generate ONE unique opening sentence. Accuracy, relevance, **natural flow**, and adherence to source text are paramount.
 
     INPUT FORMAT:
-    The user input will contain:
-    - PAGE_URL: The exact URL of the source page.
-    - PAGE_TEXT: The text content scraped from that URL.
-    - CONVERSATION HISTORY: (Optional) Recent messages exchanged in this session.
-    - CURRENT QUESTION: The student's specific question.
+    - PAGE_URL: The URL where the text originated.
+    - PAGE_TEXT: The content scraped from the page.
+    - EMAIL_PURPOSE: (Optional) The reason for sending the email, which might include selling a product/service.
+
+    CRITICAL CONSTRAINTS:
+    - **STRICTLY ADHERE TO PAGE_TEXT:** Your generated sentence MUST be based *exclusively* on information explicitly present in the provided PAGE_TEXT.
+    - **NO HALLUCINATION / INVENTION:** Under NO circumstances should you invent facts, infer details not present, speculate, or use any external knowledge beyond interpreting the provided text. Accuracy to the source is vital.
+    - **FALLBACK MECHANISM:** If, after careful analysis, you cannot identify a *specific*, *compelling*, and *relevant* point within the PAGE_TEXT to base a personalized opening line upon (considering the EMAIL_PURPOSE if provided), your *only* output MUST be the exact phrase: `No specific opening line found based on the provided text.` Do not output this phrase if you *can* find a suitable point.
 
     YOUR TASK:
-    1. **Analyze the CURRENT QUESTION:** Identify the core intent and keywords.
-    2. **Consider CONVERSATION HISTORY:** Use the history (if provided) to understand the context of the CURRENT QUESTION (e.g., pronouns, follow-ups).
-    3. **Efficiently Search PAGE_TEXT:** Scan the provided text, focusing on sections relevant to the question's keywords and history context to find the answer quickly.
-    4. **Extract Accurately:** Base your answer *only* on information explicitly stated in the PAGE_TEXT. Do *not* infer or use external knowledge.
-    5. **Format Clearly:** Present the answer concisely. If using bullet points for lists, steps, or distinct pieces of information, include a maximum of 5 relevant points to maintain focus and readability.
-    6. **Cite Source Once:** Begin your answer by stating the source URL using the format: `Based on the information provided [PAGE_URL]:` (replace PAGE_URL with the actual URL provided in the input). Do *not* repeat the citation within the answer.
-    7. **Handle Missing Information:** If the answer is definitively *not* present in the PAGE_TEXT, respond ONLY with: `Based on the information provided [PAGE_URL]: I couldn't find specific information about [topic of the question].` (Replace bracketed text appropriately). Do not apologize excessively or offer to search elsewhere.
-    8. **Maintain Tone:** Be professional, helpful, and direct. Avoid conversational filler.
+    1.  **Identify Subject & Purpose:** Determine if the `PAGE_TEXT` primarily describes an individual person or an organization. Understand the `EMAIL_PURPOSE`, especially if it involves sales or partnership.
+    2.  **Scrutinize PAGE_TEXT:** Carefully search the text for 1-2 *specific* and *verifiable* details (e.g., a recent company announcement title, a quantifiable achievement mentioned, a unique phrase from their mission/values, a specific project/product name, a directly stated company goal or challenge, specific role/expertise/accomplishment). Avoid generic marketing language.
+    3.  **Assess Relevance & Connection:** Evaluate the identified detail(s):
+        *   Is it specific and non-generic?
+        *   **If EMAIL_PURPOSE is provided (especially sales/partnership):** Does the detail *directly relate* to the product, service, or collaboration mentioned in the purpose? Can you form a logical, *natural-sounding* bridge between the person's/company's work (from the text) and the value proposition (from the purpose)?
+    4.  **Generate OR Fallback:**
+        *   **If** a specific, relevant detail connecting to the purpose (or compelling on its own) is found: Craft a *single*, concise sentence (strict maximum 25 words). **This sentence MUST sound natural, flow smoothly, and be engaging – avoid robotic phrasing.** If selling to a person, elegantly connect the detail about *them* or *their work* to the potential benefit or relevance of your offering for *them*. Ensure it works perfectly as a cold email's *very first sentence*.
+        *   **Else (No suitable detail/connection found):** Output the exact fallback phrase: `No specific opening line found based on the provided text.`
+    5.  **Output ONLY the Result:** Your entire response must be *either* the single generated sentence *or* the exact fallback phrase. No explanations, labels, quotes, or other text.
 
-    Example Answer Format (with Bullets - max 5 shown):
-    Based on the information provided [https://example.edu/admissions/requirements]:
-    * The application deadline for Fall 2025 is January 15th.
-    * Required documents include official transcripts and two letters of recommendation.
-    * There is an application fee of $75.
-    * English proficiency test scores (TOEFL or IELTS) are required.
-    * A personal statement outlining your goals is needed.
+    Example 1 (Selling to Person - Improved Flow):
+    PAGE_URL: https://www.dbfwclegal.com/jim-y-wong/
+    PAGE_TEXT: "...His business law practice encompasses...general regulatory and compliance (including visa applications and immigration compliance)..."
+    EMAIL_PURPOSE: Introduce our AI platform that helps streamline immigration case workflows and boost client engagement only for O1 and EB1A visa types.
 
-    Example Not Found Format:
-    Based on the information provided [https://example.edu/financial-aid]: I couldn't find specific information about scholarship amounts for international students.
+    Example Output 1:
+    Your background including immigration compliance caught my eye; we're helping attorneys streamline O1/EB1A workflows with AI and thought it might interest you.
+    *(Alternative Output 1):*
+    Saw your profile mentions specific experience with immigration compliance – our AI platform simplifies O1/EB1A workflows, which seemed highly relevant.
+
+    Example 2 (General Outreach to Company):
+    PAGE_URL: https://example.com/about
+    PAGE_TEXT: "...Our mission is to revolutionize widget production using sustainable AI..."
+    EMAIL_PURPOSE: (None provided)
+
+    Example Output 2:
+    I was impressed to read about ExampleCorp's mission to revolutionize widget production using sustainable AI.
+
+    Example 3 (Fallback):
+    PAGE_URL: https://example.com/contact
+    PAGE_TEXT: "Contact us via phone or email. Our address is 123 Main St."
+    EMAIL_PURPOSE: Sales outreach
+
+    Example Output 3:
+    No specific opening line found based on the provided text.
 """)
 
-# Define the Study Abroad Agent globally
-study_abroad_agent = Agent(
-    name="Study Abroad Assistant",
+# Define the Personalization Agent globally
+personalization_agent = Agent(
+    name="Personalization Agent",
     instructions=AGENT_PROMPT,
-    model="gpt-4.1"  # Using gpt-4o as per standard models
+    model="gpt-4.1" # Or preferred model like gpt-4o
 )
 
-# Renamed and refined function to use Agents SDK
-async def run_study_abroad_agent(agent: Agent, input_text: str) -> str:
-    """Runs the study abroad agent with the provided input text."""
+# Renamed function to run the Personalization Agent
+async def run_personalization_agent(agent: Agent, input_text: str) -> str:
+    """Runs the personalization agent with the provided input text."""
     try:
         result = await Runner.run(agent, input_text)
         return result.final_output
     except Exception as e:
-        # Log error for debugging if needed
-        # print(f"Agent run failed: {e}") 
         st.error(f"Error running agent: {e}")
-        return "Sorry, I encountered an error trying to process your request."
+        return "Sorry, I encountered an error trying to generate the opening line."
 
 # ----------------- STREAMLIT LAYOUT -----------------
-st.set_page_config(page_title=APP_NAME, page_icon="🎓", layout="wide")
+st.set_page_config(page_title=APP_NAME, page_icon="✨", layout="wide") # Changed icon
 
 # Custom theme colors
 st.markdown("""
@@ -201,31 +227,35 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ---- Sidebar ("Create your agent") ----
+# ---- Sidebar ----
 with st.sidebar:
-    st.header("Create your agent")
+    st.header("Analyze Page Content") # Updated header
 
-    # ----- URL + options (Moved Up) -----
-    url = st.text_input("Enter university page URL", placeholder="https://example.edu/admissions")
+    # ----- URL + options ----- 
+    url = st.text_input("Enter profile/company URL...", placeholder="https://example.com/about") # Updated placeholder
+    # --- Add Email Purpose Input --- 
+    email_purpose = st.text_input("Purpose of email (optional context):", placeholder="e.g., Job application, Sales pitch")
+    # --- End Email Purpose Input --- 
     use_wait = st.checkbox("Use comprehensive text extraction (wait for JS)")
-    create = st.button("Create agent", use_container_width=True)
+    # Renamed button text
+    create = st.button("✨ Generate Opening Line", use_container_width=True)
     
-    st.divider() # Add a visual separator
+    st.divider()
 
-    # ----- Email collection (optional - Moved Down) -----
-    st.subheader("Join the wait‑list")
+    # ----- Email collection (optional) ----- 
+    # (Kept as is, still potentially useful)
+    st.subheader("Join the wait‑list") 
     st.markdown("""
         Get notified about new features like:
-        *   Multi-Page Intake
-        *   Deadline & Scholarship Reminders
-        *   End-to-End Workflow
+        *   Multi-Page Analysis
+        *   Purpose-Driven Lines
+        *   CRM Integration
     """)
     with st.form("email_form"):
         email = st.text_input("Email address", placeholder="you@example.com")
         agree = st.checkbox("I agree to receive product updates")
         if st.form_submit_button("Subscribe"):
             if "@" in email and "." in email and agree:
-                # Ensure the data directory exists
                 DATA_DIR.mkdir(parents=True, exist_ok=True)
                 try:
                     with open(DATA_DIR / "emails.csv", "a", encoding="utf‑8") as f:
@@ -238,176 +268,135 @@ with st.sidebar:
             else:
                 st.error("Please enter a valid email address.")
 
-# ---- Main pane ----
-st.title(f"🤖 {APP_NAME}")
-st.markdown('<p class="subheader">Your personal guide to university information worldwide.</p>', unsafe_allow_html=True)
-
-# Display session run count (optional, for visibility)
-# st.caption(f"Questions this session: {st.session_state.session_runs}/{SESSION_RUN_LIMIT}")
-
-# Agent Creation Logic (triggered by button click)
-if create:
-    # Validate URL input before proceeding
-    if not url:
-        st.warning("Please enter a university page URL in the sidebar.")
-    elif len(url) > MAX_URL_LENGTH:
-        st.error(f"URL is too long (max {MAX_URL_LENGTH} characters).")
-    elif "://" not in url:
-        st.error("Please enter a valid URL (including http:// or https://).")
-    else:
-        # If URL is valid, proceed with scraping
-        try:
-            # Use longer wait time if comprehensive checkbox is ticked
-            scrape_wait_time = 4000 if use_wait else 2000 
-            # Update spinner text to reflect max potential wait time
-            with st.spinner(f"Reading university page (wait up to {scrape_wait_time/1000:.0f}s)..." ):
-                page_md = scrape_page(url, wait_ms=scrape_wait_time)
-            st.session_state.page_text = page_md
-            st.session_state.source_url = url
-            st.session_state.session_runs = 0 
-            st.session_state.messages = [] 
-            st.success("✅ University content analyzed! Ask your questions below.")
-        except Exception as e:
-            st.error(f"Could not read page: {e}")
-            if "page_text" in st.session_state: del st.session_state.page_text
-            if "source_url" in st.session_state: del st.session_state.source_url
-            if "messages" in st.session_state: del st.session_state.messages
-
-# ------------- Chat Area ------------- 
-# Only show chat if page text has been successfully loaded into session state
-if "page_text" in st.session_state:
-    
-    # Add diagnostic expander - always visible when chat is active for a page
-    with st.expander("View Page Content (Text Format)", expanded=False): # Keep it collapsed by default
-        st.text_area("Page Text:", value=st.session_state.page_text,
-                    height=300, key="scraped_text_view", disabled=True)
-
-    # Initialize message list if it doesn't exist (should be handled by above logic, but belt-and-suspenders)
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    # Display previous messages
-    for m in st.session_state.messages:
-        with st.chat_message(m["role"]):
-            st.markdown(m["content"])
-
-    # Calculate remaining questions for placeholder and disabled state
-    questions_left = SESSION_RUN_LIMIT - st.session_state.session_runs
-    placeholder_text = f"Ask a question... ({questions_left} left)" if questions_left > 0 else "Session limit reached for this page."
-    chat_disabled = (questions_left <= 0)
-
-    # Chat input
-    prompt = st.chat_input(placeholder_text, disabled=chat_disabled, key=f"chat_input_{st.session_state.source_url}") 
-    
-    if prompt and not chat_disabled: 
-        # Validate question length first
-        if len(prompt) > MAX_QUESTION_LENGTH:
-             with st.chat_message("assistant"):
-                 st.error(f"Question is too long (max {MAX_QUESTION_LENGTH} characters).")
-        else:
-            # Display user message immediately
-            st.session_state.messages.append({"role":"user", "content":prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
-
-            # --- Check Limits --- 
-            if st.session_state.session_runs < SESSION_RUN_LIMIT and increment_runs():
-                # --- Limits OK - Proceed with Agent --- 
-                with st.chat_message("assistant"):
-                    with st.spinner("Analyzing information..."):
-                        try:
-                            # Create context using the improved chunking function
-                            context_chunks = create_context_chunks(st.session_state.page_text, max_tokens=3000)
-                            # Significantly increase the character limit passed to the agent
-                            full_context = "\n\n---\n\n".join(context_chunks)[:80000] # Increased limit
-                            
-                            # Prepare input for the agent, including history
-                            history_string = ""
-                            recent_messages = st.session_state.messages[-5:-1]
-                            if recent_messages:
-                                history_items = []
-                                for msg in recent_messages:
-                                    role = msg["role"].upper()
-                                    content = msg["content"].replace('\n', ' ')
-                                    history_items.append(f"{role}: {content}")
-                                history_string = "CONVERSATION HISTORY:\n" + "\n".join(history_items) + "\n\n"
-
-                            input_text = (
-                                f"PAGE_URL: {st.session_state.source_url}\n\n"
-                                f"PAGE_TEXT:\n{full_context}\n\n"
-                                f"{history_string}"
-                                f"CURRENT QUESTION: {prompt}"
-                            )
-                            
-                            # Run agent
-                            answer = asyncio.run(run_study_abroad_agent(study_abroad_agent, input_text))
-
-                            # --- Log Usage Data --- 
-                            try:
-                                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                log_data = [
-                                    timestamp,
-                                    st.session_state.source_url,
-                                    prompt, # User's question
-                                    answer # Agent's answer
-                                ]
-                                DATA_DIR.mkdir(parents=True, exist_ok=True) # Ensure dir exists
-                                with open(USAGE_LOG_FILE, "a", newline='', encoding="utf-8") as f:
-                                    writer = csv.writer(f)
-                                    # Optional: Write header if file is new/empty
-                                    # if f.tell() == 0:
-                                    #     writer.writerow(["Timestamp", "SourceURL", "Question", "Answer"])
-                                    writer.writerow(log_data)
-                            except Exception as log_e:
-                                st.warning(f"Could not log usage data: {log_e}") # Non-critical warning
-                            # --- End Logging --- 
-
-                            # Increment session counter *after* successful execution & logging
-                            st.session_state.session_runs += 1
-                            
-                            # Update history and display answer
-                            st.markdown(answer)
-                            st.session_state.messages.append({"role":"assistant","content":answer})
-                            
-                            # Rerun script slightly to update chat input placeholder/state *immediately*
-                            st.rerun()
-
-                        except Exception as agent_e:
-                            st.error(f"Analysis error: {agent_e}")
-            # Handle limit reached cases cleanly after the check
-            elif st.session_state.session_runs >= SESSION_RUN_LIMIT:
-                 with st.chat_message("assistant"):
-                     st.warning(f"Session limit of {SESSION_RUN_LIMIT} questions reached for this page analysis.")
-                 st.stop()
-            else: # Implies persistent limit reached
-                 with st.chat_message("assistant"):
-                     st.error("The overall service demo limit has been reached. Please try again later.")
-                 st.stop()
-
-    # ---- Feedback Form (Inside chat area block, but after main chat logic) ----
     st.divider()
+    # ----- Feedback Form (Moved to Sidebar) -----
     with st.expander("Provide Feedback (Optional)"):
         feedback_text = st.text_area("Share your experience or suggestions:", key="feedback_text_area")
         if st.button("Submit Feedback", key="feedback_submit_button"):
             if feedback_text:
                 try:
-                    DATA_DIR.mkdir(parents=True, exist_ok=True) # Ensure dir exists
+                    DATA_DIR.mkdir(parents=True, exist_ok=True)
                     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    # Using CSV writer for proper escaping
                     with open(FEEDBACK_FILE, "a", newline='', encoding="utf-8") as f:
                         writer = csv.writer(f, quoting=csv.QUOTE_ALL)
-                        # Optional: Write header
-                        # if f.tell() == 0:
-                        #     writer.writerow(["Timestamp", "Feedback"])
                         writer.writerow([timestamp, feedback_text]) 
                     st.success("Thank you for your feedback!")
-                    # Optionally clear the text area after submission
-                    # st.session_state.feedback_text_area = "" 
                 except Exception as e:
                     st.error(f"Could not save feedback: {e}")
             else:
                 st.warning("Please enter some feedback before submitting.")
 
-# Initial message if no page has been analyzed yet
-elif not create: # Only show if the create button wasn't just clicked and page_text doesn't exist
-    st.info("👈 Enter a university page URL in the sidebar and click **Create agent** to start exploring.")
+# ---- Main pane ----
+st.title(f"✨ {APP_NAME}") # Updated icon
+st.markdown('<p class="subheader">Generate personalized cold email opening lines from web content.</p>', unsafe_allow_html=True) # Updated subheader
+
+# Generation Logic (triggered by button click in sidebar)
+if create:
+    # Reset previous generation result
+    st.session_state.generated_line = None 
+    # Clear previous page text state if create is clicked again
+    st.session_state.page_text = None 
+    st.session_state.source_url = None
+
+    # Validate URL input
+    if not url:
+        st.warning("Please enter a URL in the sidebar.")
+    elif len(url) > MAX_URL_LENGTH:
+        st.error(f"URL is too long (max {MAX_URL_LENGTH} characters).")
+    elif "://" not in url:
+        st.error("Please enter a valid URL (including http:// or https://).")
+    else:
+        # --- Scrape Page --- 
+        page_md = None
+        try:
+            scrape_wait_time = 4000 if use_wait else 2000 
+            with st.spinner("Reading page... (please wait)" ):
+                page_md = scrape_page(url, wait_ms=scrape_wait_time)
+            st.session_state.page_text = page_md # Store scraped text
+            st.session_state.source_url = url # Store URL
+            # Reset session generation counter for the new page
+            st.session_state.session_runs = 0 
+            st.success("✅ Page content loaded.")
+        except Exception as e:
+            st.error(f"Could not read page: {e}")
+        
+        # --- Generate Opening Line (only if scraping succeeded) --- 
+        if page_md:
+            # Check limits before calling agent
+            if st.session_state.session_runs < SESSION_GENERATION_LIMIT and increment_runs():
+                with st.spinner("Generating opening line... (please wait)"):
+                    try:
+                        context_chunks = create_context_chunks(st.session_state.page_text, max_tokens=3000)
+                        full_context = "\n\n---\n\n".join(context_chunks)[:80000] # Keep large context
+                        
+                        # --- Prepare Email Purpose String --- 
+                        purpose_string = ""
+                        if email_purpose: # Check if user entered anything
+                            purpose_string = f"EMAIL_PURPOSE: {email_purpose}\n\n"
+                        # --- End Email Purpose Prep --- 
+
+                        # Prepare input_text including optional purpose
+                        input_text = (
+                            f"PAGE_URL: {st.session_state.source_url}\n\n"
+                            f"{purpose_string}" # Add formatted purpose here
+                            f"PAGE_TEXT:\n{full_context}"
+                        )
+                        
+                        # Run the personalization agent
+                        generated_line = asyncio.run(run_personalization_agent(personalization_agent, input_text))
+                        st.session_state.generated_line = generated_line # Store result
+                        
+                        # Increment counter
+                        st.session_state.session_runs += 1
+                        
+                        # Log usage (including purpose)
+                        try:
+                            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            # Add email_purpose to the log data
+                            log_data = [ timestamp, st.session_state.source_url, email_purpose, generated_line ]
+                            DATA_DIR.mkdir(parents=True, exist_ok=True)
+                            with open(USAGE_LOG_FILE, "a", newline='', encoding="utf-8") as f:
+                                writer = csv.writer(f)
+                                # Optional: Update header if adding it
+                                # if f.tell() == 0:
+                                #    writer.writerow(["Timestamp", "SourceURL", "EmailPurpose", "GeneratedLine"])
+                                writer.writerow(log_data)
+                        except Exception as log_e:
+                            st.warning(f"Could not log usage data: {log_e}")
+
+                    except Exception as agent_e:
+                        st.error(f"Generation error: {agent_e}")
+                        st.session_state.generated_line = "Error generating line." # Set error message
+            
+            # Handle limits reached (display message, don't generate)
+            elif st.session_state.session_runs >= SESSION_GENERATION_LIMIT:
+                 st.warning(f"Session limit of {SESSION_GENERATION_LIMIT} generations reached for this URL analysis.")
+            else: # Implies persistent limit reached
+                 st.error("The overall service demo limit has been reached. Please try again later.")
+
+# --- Display Output Area --- 
+# This section runs regardless of the 'create' button state, showing the *last* result
+if st.session_state.get("page_text") and st.session_state.get("source_url"):
+    st.divider()
+    st.info(f"Showing results for: {st.session_state.source_url}")
+    # Optionally show session count
+    st.caption(f"Generations this session for this URL: {st.session_state.session_runs}/{SESSION_GENERATION_LIMIT}")
+
+    # Display the generated line if available
+    if st.session_state.get("generated_line"):
+        st.subheader("✨ Suggested Opening Line:")
+        st.text_area("Copy this line:", value=st.session_state.generated_line, height=100, key="output_line")
+    elif create: # If create was clicked but line is missing (e.g., due to limits or error before generation)
+         if st.session_state.session_runs >= SESSION_GENERATION_LIMIT or load_counter() >= RUN_LIMIT:
+              pass # Limit message already shown above
+         else: 
+              st.warning("Could not generate opening line. Check for errors above or try again.")
+    
+    # Add expander for scraped text here for context
+    with st.expander("View Analyzed Page Content (Text Format)", expanded=False):
+        st.text_area("Page Text:", value=st.session_state.page_text,
+                    height=300, key="analyzed_text_view", disabled=True)
+
+# Initial message if no analysis has been triggered yet
+elif not create and not st.session_state.get("page_text"):
+    st.info("👈 Enter a URL in the sidebar and click **Generate Opening Line** to start.")
