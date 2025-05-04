@@ -259,7 +259,8 @@ if create:
         try:
             # Use longer wait time if comprehensive checkbox is ticked
             scrape_wait_time = 4000 if use_wait else 2000 
-            with st.spinner(f"Reading university page (wait: {scrape_wait_time/1000}s)..." ):
+            # Update spinner text to reflect max potential wait time
+            with st.spinner(f"Reading university page (wait up to {scrape_wait_time/1000:.0f}s)..." ):
                 page_md = scrape_page(url, wait_ms=scrape_wait_time)
             st.session_state.page_text = page_md
             st.session_state.source_url = url
