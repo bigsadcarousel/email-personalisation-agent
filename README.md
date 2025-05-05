@@ -1,30 +1,24 @@
-# Uni-Agent (Beta V0) 🤖🎓
+# Personalization Agent (Beta V0) ✨📧
 
-Uni-Agent is a Streamlit web application designed as a Minimum Viable Product (MVP) to serve as an AI assistant for prospective international students. Users can input the URL of a specific university web page (e.g., admissions requirements, deadlines, program details), and the agent will answer questions based *only* on the content of that page, providing cited and structured responses.
+Personalization Agent is a Streamlit web application designed to generate personalized cold email opening lines based on the content of a provided web page URL (e.g., a company's 'About Us' page, a person's LinkedIn profile, a blog post).
 
 ## Purpose
 
-The primary goals of this MVP are:
+The primary goals of this Beta are:
 
-*   **Validate Demand:** Quickly gauge user interest in an interactive Q&A interface specifically tailored to the content of individual university web pages, as an alternative to navigating complex websites.
-*   **Test Core Technology:** Evaluate the effectiveness of web scraping (Firecrawl) combined with LLM question-answering (OpenAI Agents SDK) for this specific use case.
-*   **Capture Early Leads:** Offer an optional email signup for users interested in future updates and more advanced features.
-*   **Gather Usage Data:** Collect basic metrics on user interactions (URLs used, questions asked, answers generated) to inform future development.
+*   **Demonstrate Capability:** Showcase the ability to generate relevant, personalized opening lines by analyzing web content.
+*   **Test Core Technology:** Evaluate the effectiveness of web scraping (Firecrawl) combined with configurable LLMs (OpenAI via Agents SDK) for automated copywriting assistance.
+*   **Gather Usage Data:** Collect basic metrics on user interactions (URLs used, email purpose, generated lines) to inform future development and prompt refinement.
 
 ## Features
 
-*   **Single URL Intake:** Accepts a single university web page URL as input.
-*   **Web Content Extraction:** Uses the Firecrawl API (`firecrawl-py` SDK) to scrape and convert the specified web page content into clean Markdown text. Includes options for handling JavaScript-rendered content via wait times.
-*   **AI-Powered Q&A:** Leverages the OpenAI Agents SDK (`gpt-4.1` or similar model specified) to answer user questions based *strictly* on the extracted page text.
-*   **Conversational Context:** Remembers the last few turns of the conversation within a session to understand follow-up questions.
-*   **Structured & Cited Answers:** The agent is prompted to provide concise answers, use bullet points for lists (max 5), and cite the source URL once at the beginning of its response.
-*   **Usage Limits:**
-    *   **Session Limit:** Restricts users to a specific number of questions (e.g., 5) per analyzed page within a single browser session.
-    *   **Persistent Global Limit:** A configurable overall limit (`RUN_LIMIT`) on the total number of questions the deployed application instance can answer across all users, tracked via `limit.json`.
-*   **Optional Email Signup:** A sidebar form allows users to optionally subscribe for updates, saving emails to `emails.csv`.
-*   **Usage Logging:** Records timestamp, source URL, user question, and agent answer to `usage_log.csv` for analysis.
-*   **Feedback Collection:** An optional in-app form allows users to submit feedback, saved to `feedback.csv`.
-*   **Basic Input Validation:** Checks for reasonable URL length/format and question length.
+*   **Single URL Intake:** Accepts a single web page URL as input.
+*   **Web Content Extraction:** Uses the Firecrawl API (`firecrawl-py` SDK) to scrape and convert the specified web page content into clean Markdown text. Includes an option for potentially longer wait times to handle JavaScript-rendered content.
+*   **Configurable AI Model:** Allows users to select from a list of OpenAI models (e.g., `gpt-4o`, `gpt-4o-mini`) via the OpenAI Agents SDK to perform the generation task.
+*   **Optional Email Purpose:** Users can provide context about the purpose of their email (e.g., "Sales pitch for SEO services", "Job application for marketing role") to help guide the generation.
+*   **Personalized Opening Line Generation:** The selected AI agent analyzes the scraped text and the optional email purpose to generate *one* concise opening sentence. The underlying prompt prioritizes using recent achievements, specific testimonial outcomes, or relevant article topics found in the text.
+*   **Usage Logging:** Records timestamp, source URL, email purpose, and the generated opening line to `usage_log.csv` for analysis.
+*   **Basic Input Validation:** Checks for reasonable URL length/format.
 
 ## Tech Stack
 
@@ -34,7 +28,7 @@ The primary goals of this MVP are:
 *   **Web Scraping:** Firecrawl (`firecrawl-py`)
 *   **Text Processing:** Tiktoken (for chunking text based on token counts)
 *   **Configuration:** python-dotenv (for managing API keys via `.env` file locally)
-*   **Data Storage (Local/MVP):** JSON (for run limit), CSV (for emails, feedback, usage logs)
+*   **Data Storage (Local/MVP):** CSV (for usage logs)
 
 ## Setup Instructions
 
@@ -51,9 +45,9 @@ The primary goals of this MVP are:
     # Activate (Windows - Git Bash/WSL)
     source .venv/Scripts/activate
     # Activate (Windows - Command Prompt)
-    .\\.venv\\Scripts\\activate.bat
+    .\.venv\Scripts\activate.bat
     # Activate (Windows - PowerShell)
-    .\\.venv\\Scripts\\Activate.ps1 
+    .\.venv\Scripts\Activate.ps1 
     ```
 3.  **Install Dependencies:**
     ```bash
@@ -64,8 +58,6 @@ The primary goals of this MVP are:
     ```dotenv
     OPENAI_API_KEY="sk-..."
     FIRECRAWL_API_KEY="fc-..."
-    # Optional: Set a global run limit (defaults to 100 if not set)
-    # RUN_LIMIT=500 
     ```
     *Replace `sk-...` and `fc-...` with your actual keys.*
 
@@ -92,16 +84,12 @@ Streamlit Community Cloud is a fast way to deploy this app publicly for free.
 4.  **Add Secrets:** This is crucial for security. In your deployed app's settings on Streamlit Community Cloud (usually under the menu ☰ -> Settings -> Secrets):
     *   Add `OPENAI_API_KEY` and paste your OpenAI key as the value.
     *   Add `FIRECRAWL_API_KEY` and paste your Firecrawl key as the value.
-    *   Optionally, add `RUN_LIMIT` if you want to set a global limit different from the default 100.
     *   The deployed app will read these secrets as environment variables.
 
 ## Data Files
 
-The application generates the following files locally or within the deployed container:
+The application generates the following file locally or within the deployed container:
 
-*   `limit.json`: Stores the count for the persistent global `RUN_LIMIT`.
-*   `emails.csv`: Appends email addresses from the optional signup form.
-*   `feedback.csv`: Appends user feedback submitted through the app.
-*   `usage_log.csv`: Appends records of URLs processed, questions asked, and answers given.
+*   `usage_log.csv`: Appends records of URLs processed, email purpose provided, and the generated opening line.
 
-These files are listed in `.gitignore` and should not be committed to version control. When deployed on Streamlit Community Cloud, these files reside within the app's running container. You may need to download them periodically from the cloud interface if you need to analyze the data, as container filesystems might not be permanently persistent across all updates or restarts. For more robust data handling, consider integrating a database.
+This file is listed in `.gitignore` and should not be committed to version control. When deployed on Streamlit Community Cloud, this file resides within the app's running container. You may need to download it periodically from the cloud interface if you need to analyze the data, as container filesystems might not be permanently persistent across all updates or restarts. For more robust data handling, consider integrating a database.
