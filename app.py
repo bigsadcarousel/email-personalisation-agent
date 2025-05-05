@@ -133,76 +133,85 @@ def scrape_page(url: str, wait_ms: int = 2000) -> str:
     # - Explore `pageOptions={'onlyMainContent': True}` if switching to JSON format.
     # - Use Firecrawl 'actions' for pages requiring complex interaction.
     # - More specific error handling for Firecrawl exceptions.
+    md_content = ""
     try:
+        print(f"Attempting to scrape: {url} with wait {wait_ms}ms") # Debug print
         res = firecrawl.scrape_url(url, formats=["markdown"], waitFor=wait_ms)
-        md = res.markdown if res else ""
-        if not md:
+        # print(f"Scrape response received: {res}") # Debug print
+        md_content = res.markdown if res else ""
+        if not md_content:
+            print(f"Scraping resulted in empty content for: {url}") # Debug print
             # More specific error message
-            raise RuntimeError(f"🔥 No Markdown text extracted from {url}. The page might be empty, block scraping, or require longer 'comprehensive' wait time.")
-        return md
+            raise RuntimeError(f"🔥 No Markdown text extracted from {url}. Page might block scraping or need longer wait.")
+        print(f"Scraping successful for: {url}") # Debug print
+        return md_content # Return successfully scraped content
     except Exception as e:
+        print(f"Scraping failed for {url}. Error: {e}") # Debug print
         # Catch potential Firecrawl specific errors if the SDK defines them, otherwise generic
-        # Log the error for server-side debugging if needed
-        # print(f"Scraping Error for {url}: {e}")
         raise RuntimeError(f"Scraping failed for {url}. Reason: {e}")
 
-# Refined Agent Prompt V4 (Person-Centric Sales Focus)
+# Refined Agent Prompt V9 (Hierarchical Generation: Specific -> Broad -> Generic)
 AGENT_PROMPT = textwrap.dedent("""\
-    You are an expert AI copywriter specializing in crafting compelling, personalized cold email opening lines. Your primary function is to analyze provided web page text and generate ONE unique opening sentence. Accuracy, relevance, **natural flow**, and adherence to source text are paramount.
+    You are an expert AI copywriter creating personalized cold email opening lines. Your goal is to generate ONE concise sentence based *exclusively* on the provided web page text, following a hierarchy of personalization.
 
     INPUT FORMAT:
     - PAGE_URL: The URL where the text originated.
     - PAGE_TEXT: The content scraped from the page.
-    - EMAIL_PURPOSE: (Optional) The reason for sending the email, which might include selling a product/service.
+    - EMAIL_PURPOSE: (Optional) The reason for sending the email.
 
     CRITICAL CONSTRAINTS:
-    - **STRICTLY ADHERE TO PAGE_TEXT:** Your generated sentence MUST be based *exclusively* on information explicitly present in the provided PAGE_TEXT.
-    - **NO HALLUCINATION / INVENTION:** Under NO circumstances should you invent facts, infer details not present, speculate, or use any external knowledge beyond interpreting the provided text. Accuracy to the source is vital.
-    - **FALLBACK MECHANISM:** If, after careful analysis, you cannot identify a *specific*, *compelling*, and *relevant* point within the PAGE_TEXT to base a personalized opening line upon (considering the EMAIL_PURPOSE if provided), your *only* output MUST be the exact phrase: `No specific opening line found based on the provided text.` Do not output this phrase if you *can* find a suitable point.
+    - **USE ONLY PROVIDED TEXT:** Base your sentence *strictly* on information found in the PAGE_TEXT.
+    - **NO MAKING STUFF UP:** Absolutely do not invent facts, infer details, or use any external knowledge.
+    - **FINAL FALLBACK:** If you cannot find *any* usable information (even a company/person name) to generate *any* kind of opening line, output *only* this exact phrase: `No usable opening line found based on the provided text.`
 
-    YOUR TASK:
-    1.  **Identify Subject & Purpose:** Determine if the `PAGE_TEXT` primarily describes an individual person or an organization. Understand the `EMAIL_PURPOSE`, especially if it involves sales or partnership.
-    2.  **Scrutinize PAGE_TEXT:** Carefully search the text for 1-2 *specific* and *verifiable* details (e.g., a recent company announcement title, a quantifiable achievement mentioned, a unique phrase from their mission/values, a specific project/product name, a directly stated company goal or challenge, specific role/expertise/accomplishment). Avoid generic marketing language.
-    3.  **Assess Relevance & Connection:** Evaluate the identified detail(s):
-        *   Is it specific and non-generic?
-        *   **If EMAIL_PURPOSE is provided (especially sales/partnership):** Does the detail *directly relate* to the product, service, or collaboration mentioned in the purpose? Can you form a logical, *natural-sounding* bridge between the person's/company's work (from the text) and the value proposition (from the purpose)?
-    4.  **Generate OR Fallback:**
-        *   **If** a specific, relevant detail connecting to the purpose (or compelling on its own) is found: Craft a *single*, concise sentence (strict maximum 25 words). **This sentence MUST sound natural, flow smoothly, and be engaging – avoid robotic phrasing.** If selling to a person, elegantly connect the detail about *them* or *their work* to the potential benefit or relevance of your offering for *them*. Ensure it works perfectly as a cold email's *very first sentence*.
-        *   **Else (No suitable detail/connection found):** Output the exact fallback phrase: `No specific opening line found based on the provided text.`
-    5.  **Output ONLY the Result:** Your entire response must be *either* the single generated sentence *or* the exact fallback phrase. No explanations, labels, quotes, or other text.
+    YOUR TASK (Follow in order):
+    1.  **Understand Purpose & Subject:** Note the `EMAIL_PURPOSE` (if provided). Briefly identify the main subject (person/company name if clear) from the `PAGE_TEXT` or `PAGE_URL`.
+    2.  **Attempt Specific Connection (Priority 1):**
+        *   Scan `PAGE_TEXT` for a *specific* detail (achievement, award, specific service/role/project, unique mission phrase) that **directly and clearly connects** to the `EMAIL_PURPOSE`.
+        *   **If found:** Generate a concise (max 25-30 words), natural sentence linking this specific detail to the purpose. Ensure varied phrasing. **STOP HERE and output this sentence.**
+    3.  **Attempt Broad Connection (Priority 2):**
+        *   **If no direct connection found:** Look for a specific detail in the `PAGE_TEXT` that falls into a *broader category* relevant to the `EMAIL_PURPOSE` (e.g., purpose mentions 'O1 visas', text mentions 'Employment Immigration').
+        *   **If found:** Generate a concise sentence linking the purpose to this broader category found in the text. Acknowledge the connection might be general. Ensure varied phrasing. **STOP HERE and output this sentence.**
+    4.  **Generate Generic Personalized Opener (Priority 3):**
+        *   **If no specific or broad connection possible:** Can you identify the primary company or person's name from the text or URL?
+        *   **If yes:** Generate a polite, generic opening line (max 20 words) that simply acknowledges their work or website, using their name. Example: "Came across [Company/Person Name]'s work and wanted to reach out." or "Learning more about [Company Name] from your website..." Ensure varied phrasing. **STOP HERE and output this sentence.**
+    5.  **Use Final Fallback (Priority 4):**
+        *   **If you cannot even generate a generic opener (e.g., empty text, cannot identify subject):** Output the final fallback phrase: `No usable opening line found based on the provided text.`
 
-    Example 1 (Selling to Person - Improved Flow):
+    OUTPUT RULES:
+    - Output ONLY the single sentence generated by the first successful step (2, 3, or 4) OR the final fallback phrase (step 5).
+    - No extra text, labels, explanations, or quotes.
+
+    Example 1 (Specific Connection - Step 2):
     PAGE_URL: https://www.dbfwclegal.com/jim-y-wong/
-    PAGE_TEXT: "...His business law practice encompasses...general regulatory and compliance (including visa applications and immigration compliance)..."
-    EMAIL_PURPOSE: Introduce our AI platform that helps streamline immigration case workflows and boost client engagement only for O1 and EB1A visa types.
+    PAGE_TEXT: "...immigration compliance..."
+    EMAIL_PURPOSE: Introduce AI platform for O1/EB1A immigration workflows.
+    Example Output 1: Noting your firm's work in immigration compliance, our AI platform specifically designed for O1/EB1A workflows could be valuable.
 
-    Example Output 1:
-    Your background including immigration compliance caught my eye; we're helping attorneys streamline O1/EB1A workflows with AI and thought it might interest you.
-    *(Alternative Output 1):*
-    Saw your profile mentions specific experience with immigration compliance – our AI platform simplifies O1/EB1A workflows, which seemed highly relevant.
+    Example 2 (Broad Connection - Step 3):
+    PAGE_URL: https://champlawgroup.com/
+    PAGE_TEXT: "...Handling Employment Immigration matters..."
+    EMAIL_PURPOSE: Introduce AI platform for O1/EB1A immigration workflows.
+    Example Output 2: Seeing that Champagne Law Group handles Employment Immigration, our AI platform for specific visa types like O1/EB1A might align with your practice.
 
-    Example 2 (General Outreach to Company):
-    PAGE_URL: https://example.com/about
-    PAGE_TEXT: "...Our mission is to revolutionize widget production using sustainable AI..."
-    EMAIL_PURPOSE: (None provided)
+    Example 3 (Generic Personalized - Step 4):
+    PAGE_URL: https://coolwidgets.com/
+    PAGE_TEXT: (Minimal text, no specific hooks, but company name is clear)
+    EMAIL_PURPOSE: General sales outreach.
+    Example Output 3: Came across CoolWidgets' website and wanted to introduce our services.
 
-    Example Output 2:
-    I was impressed to read about ExampleCorp's mission to revolutionize widget production using sustainable AI.
-
-    Example 3 (Fallback):
-    PAGE_URL: https://example.com/contact
-    PAGE_TEXT: "Contact us via phone or email. Our address is 123 Main St."
+    Example 4 (Final Fallback - Step 5):
+    PAGE_URL: https://example.com/blank
+    PAGE_TEXT: ""
     EMAIL_PURPOSE: Sales outreach
-
-    Example Output 3:
-    No specific opening line found based on the provided text.
+    Example Output 4: No usable opening line found based on the provided text.
 """)
 
 # Define the Personalization Agent globally
 personalization_agent = Agent(
     name="Personalization Agent",
     instructions=AGENT_PROMPT,
-    model="gpt-4.1" # Or preferred model like gpt-4o
+    model="gpt-4o" # Keeping gpt-4o
 )
 
 # Renamed function to run the Personalization Agent
