@@ -34,7 +34,7 @@ The primary goals of this Beta are:
 
 1.  **Clone Repository:**
     ```bash
-    git clone <your-repo-url>
+    git clone <https://github.com/GawainTheCoder/personalisation-agent>
     cd personalisation-agent
     ```
 2.  **Create Virtual Environment:** (Recommended)
