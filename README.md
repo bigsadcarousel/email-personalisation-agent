@@ -35,7 +35,7 @@ The primary goals of this Beta are:
 1.  **Clone Repository:**
     ```bash
     git clone <your-repo-url>
-    cd study-abroad-agent
+    cd personalisation-agent
     ```
 2.  **Create Virtual Environment:** (Recommended)
     ```bash
@@ -53,7 +53,7 @@ The primary goals of this Beta are:
     ```bash
     pip install -r requirements.txt
     ```
-4.  **Create `.env` File:** Create a file named `.env` in the root directory (`study-abroad-agent/`).
+4.  **Create `.env` File:** Create a file named `.env` in the root directory (`personalisation-agent/`).
 5.  **Add API Keys:** Open the `.env` file and add your API keys:
     ```dotenv
     OPENAI_API_KEY="sk-..."
@@ -64,32 +64,8 @@ The primary goals of this Beta are:
 ## Running Locally
 
 1.  Ensure your virtual environment is activated.
-2.  Navigate to the project directory (`study-abroad-agent/`).
+2.  Navigate to the project directory (`personalisation-agent/`).
 3.  Run the Streamlit application:
     ```bash
     streamlit run app.py
     ```
-4.  Streamlit will provide a local URL (usually `http://localhost:8501`) to access the app in your browser.
-
-## Deployment (Streamlit Community Cloud)
-
-Streamlit Community Cloud is a fast way to deploy this app publicly for free.
-
-1.  **Push to GitHub:** Make sure your code, including `app.py`, `requirements.txt`, and the `.gitignore` file, is pushed to a GitHub repository. **Do NOT commit your `.env` file.**
-2.  **Sign Up/In:** Go to [share.streamlit.io](https://share.streamlit.io/) and connect your GitHub account.
-3.  **Deploy App:**
-    *   Click "New app" -> "From repo".
-    *   Select your repository, branch (e.g., `main`), and the main application file (`app.py`).
-    *   Click "Deploy!".
-4.  **Add Secrets:** This is crucial for security. In your deployed app's settings on Streamlit Community Cloud (usually under the menu ☰ -> Settings -> Secrets):
-    *   Add `OPENAI_API_KEY` and paste your OpenAI key as the value.
-    *   Add `FIRECRAWL_API_KEY` and paste your Firecrawl key as the value.
-    *   The deployed app will read these secrets as environment variables.
-
-## Data Files
-
-The application generates the following file locally or within the deployed container:
-
-*   `usage_log.csv`: Appends records of URLs processed, email purpose provided, and the generated opening line.
-
-This file is listed in `.gitignore` and should not be committed to version control. When deployed on Streamlit Community Cloud, this file resides within the app's running container. You may need to download it periodically from the cloud interface if you need to analyze the data, as container filesystems might not be permanently persistent across all updates or restarts. For more robust data handling, consider integrating a database.
